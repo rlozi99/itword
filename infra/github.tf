@@ -1,5 +1,5 @@
 locals {
-  github_repo = "rlozi99/itword"
+  github_repo = "rlozi99@109088792/itword@1405970435"
 }
 
 # AWS가 GitHub Actions의 신원 증명을 믿도록 등록 (계정에 하나만 존재)
