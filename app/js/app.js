@@ -1,21 +1,68 @@
 // 화면 그리기와 이동
 //   #/            C. 목록형 홈
 //   #/card/<id>   A. 비교형 카드 / B. 에러 메시지 분해형 카드
-//   #/study       암기: 카드를 마음껏 뒤집으면서 외우기 (A-2 / B-2)
+//   #/study       암기: 카드를 마음껏 뒤집으면서 외우기 (A-2 / B-2). 덜 본 카드가 먼저 나옴
 //   #/review      확인: 한 번 뒤집고 다시/어려움/알아요/쉬워요 고르기
 
 (function () {
   var app = document.getElementById("app");
   var WORDS = window.WORDS;
   var IDS = WORDS.map(function (w) { return w.id; });
-  var FILTERS = ["전체", "뜻이 다른 단어", "자주 쓰는 표현", "에러 메시지"];
+  var STAR = "★ 표시한 것";
+  var FILTERS = ["전체", "뜻이 다른 단어", "자주 쓰는 표현", "에러 메시지", STAR];
   var RATES = [
     ["again", "다시"], ["hard", "어려움"], ["good", "알아요"], ["easy", "쉬워요"]
   ];
 
-  var home = { query: "", filter: "전체" }; // 홈 화면 검색어와 필터는 돌아와도 유지
+  // 홈 화면 상태: 검색어와 필터는 돌아와도 유지. selecting은 카드를 체크해서 고르는 중인지, picked는 고른 카드
+  var home = { query: "", filter: "전체", selecting: false, picked: {} };
   var study = null;                          // 진행 중인 암기 (자유롭게 뒤집기)
   var session = null;                        // 진행 중인 확인 (복습 주기 평가)
+
+  // ───── 별표와 "암기에서 본 횟수" 저장 (브라우저 저장소) ─────
+  var PREFS_KEY = "itword.prefs.v1";
+  var prefs = { stars: {}, seen: {} };
+  try {
+    var saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "null");
+    if (saved && typeof saved === "object") {
+      prefs.stars = saved.stars || {};
+      prefs.seen = saved.seen || {};
+    }
+  } catch (e) { /* 저장소를 못 쓰면 이번 실행 동안만 기억 */ }
+  function savePrefs() {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* 무시 */ }
+  }
+  function isStar(id) { return !!prefs.stars[id]; }
+  function toggleStar(id) {
+    if (prefs.stars[id]) delete prefs.stars[id]; else prefs.stars[id] = true;
+    savePrefs();
+  }
+  function starBtn(id) {
+    var on = isStar(id);
+    return '<button class="icon star' + (on ? " on" : "") + '" data-star="' + esc(id) + '" aria-pressed="' + on +
+      '" aria-label="별표" title="별표">' + (on ? "★" : "☆") + '</button>';
+  }
+
+  // ───── 영어 발음 듣기 (브라우저에 내장된 음성 사용) ─────
+  var TTS = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+  var SPEAKER = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" ' +
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4z"/>' +
+    '<path d="M16.5 8.5a5 5 0 0 1 0 7"/><path d="M19 6a8.5 8.5 0 0 1 0 12"/></svg>';
+  function speakBtn(w) {
+    if (!TTS) return "";
+    return '<button class="icon say" data-speak="' + esc(w.id) + '" aria-label="발음 듣기" title="발음 듣기">' + SPEAKER + '</button>';
+  }
+  function speak(id) {
+    var w = find(id);
+    if (!TTS || !w) return;
+    var u = new SpeechSynthesisUtterance(w.type === "error" ? w.sentence : w.term);
+    u.lang = "en-US";
+    u.rate = 0.9;
+    var voices = window.speechSynthesis.getVoices().filter(function (v) { return /^en[-_]US/i.test(v.lang); });
+    if (voices.length) u.voice = voices[0];
+    window.speechSynthesis.cancel(); // 읽는 중이면 끊고 새로 읽기
+    window.speechSynthesis.speak(u);
+  }
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, function (ch) {
@@ -41,7 +88,8 @@
   // A. 비교형
   function wordCard(w) {
     return '' +
-      '<div class="head"><h2 class="term">' + esc(w.term) + '</h2><span class="tag">' + esc(w.tag) + '</span></div>' +
+      '<div class="head"><div class="word"><h2 class="term">' + esc(w.term) + '</h2>' + speakBtn(w) + '</div>' +
+        '<span class="tag">' + esc(w.tag) + '</span></div>' +
       '<div class="compare">' +
         '<div><small>일상에서</small>' + esc(w.everyday) + '</div>' +
         '<div class="it"><small>IT에서</small>' + esc(w.it) + '</div>' +
@@ -57,7 +105,7 @@
     }).join("");
     return '' +
       '<div class="head"><span class="tag error">에러 메시지</span><span class="pattern">패턴 · ' + esc(w.pattern) + '</span></div>' +
-      '<div class="code sentence">' + sentenceHtml(w) + '</div>' +
+      '<div class="code sentence"><span>' + sentenceHtml(w) + '</span>' + speakBtn(w) + '</div>' +
       '<p class="meaning">' + esc(w.meaning) + '</p>' +
       '<dl class="parts">' + parts + '</dl>' +
       '<p class="note">' + esc(w.note) + '</p>';
@@ -69,30 +117,83 @@
   function frontBody(w, hint) {
     if (w.type === "error") {
       return '<span class="tag error">에러 메시지</span>' +
-        '<div class="code sentence">' + sentenceHtml(w) + '</div>' +
+        '<div class="code sentence"><span>' + sentenceHtml(w) + '</span>' + speakBtn(w) + '</div>' +
         '<span class="hint">' + hint + '</span>';
     }
     return '<span class="tag">' + esc(w.tag) + '</span>' +
-      '<h2 class="term">' + esc(w.term) + '</h2>' +
+      '<div class="word"><h2 class="term">' + esc(w.term) + '</h2>' + speakBtn(w) + '</div>' +
       '<span class="hint">' + hint + '</span>';
   }
 
   // ───── C. 홈 ─────
 
   function matches(w) {
-    if (home.filter !== "전체" && w.tag !== home.filter) return false;
+    if (home.filter === STAR) { if (!isStar(w.id)) return false; }
+    else if (home.filter !== "전체" && w.tag !== home.filter) return false;
     var q = home.query.trim().toLowerCase();
     if (!q) return true;
     var text = [titleOf(w), shortOf(w), w.everyday, w.sentence, w.meaning, w.example].join(" ").toLowerCase();
     return text.indexOf(q) >= 0;
   }
 
-  function listHtml() {
-    var rows = WORDS.filter(matches).map(function (w) {
-      return '<button class="row" data-id="' + esc(w.id) + '">' +
-        '<div><b>' + esc(titleOf(w)) + '</b><span>' + esc(shortOf(w)) + '</span></div><i>›</i></button>';
+  function pickedIds() {
+    return IDS.filter(function (id) { return home.picked[id]; }); // 목록 순서 유지
+  }
+
+  function listHtml(shown) {
+    var rows = shown.map(function (w) {
+      var id = esc(w.id);
+      var text = '<div><b>' + esc(titleOf(w)) + '</b><span>' + esc(shortOf(w)) + '</span></div>';
+      if (home.selecting) {
+        // 고르는 중: 줄을 누르면 체크
+        var on = !!home.picked[w.id];
+        return '<div class="row"><button class="rowmain" data-pick="' + id + '" aria-pressed="' + on + '">' +
+          '<span class="check' + (on ? " on" : "") + '">' + (on ? "✓" : "") + '</span>' + text + '</button></div>';
+      }
+      return '<div class="row"><button class="rowmain" data-id="' + id + '">' + text + '<i>›</i></button>' + starBtn(w.id) + '</div>';
     }).join("");
-    return rows || '<div class="empty">찾는 단어가 없어요.</div>';
+    if (rows) return rows;
+    return '<div class="empty">' + (home.filter === STAR && !home.query.trim()
+      ? "아직 표시한 카드가 없어요. 목록이나 카드에서 ☆를 눌러 표시해 보세요."
+      : "찾는 단어가 없어요.") + '</div>';
+  }
+
+  // "모두 선택" 버튼. 지금 목록에 보이는 카드를 전부 고르고, 이미 다 골랐으면 "모두 해제"로 바뀜
+  function allBtn(shown, withCount) {
+    var allOn = shown.length > 0 && shown.every(function (w) { return home.picked[w.id]; });
+    return '<button class="link strong" data-all="1"' + (shown.length ? "" : " disabled") + '>' +
+      (allOn ? "모두 해제" : "모두 선택") + (withCount ? ' (' + shown.length + '개)' : '') + '</button>';
+  }
+
+  // 목록 위 한 줄: 평소엔 개수와 "골라서 암기", 고르는 중엔 "모두 선택"과 "취소"
+  function listbarHtml(shown) {
+    if (!home.selecting) {
+      return '<span class="muted">' + shown.length + '개</span><button class="link" id="pick">골라서 암기</button>';
+    }
+    return allBtn(shown, true) + '<button class="link" id="cancel">취소</button>';
+  }
+
+  // 고르는 중에 화면 아래에 떠 있는 막대. 목록을 내려도 "모두 선택"과 시작 버튼이 항상 보임
+  function pickbarHtml(shown) {
+    if (!home.selecting) return "";
+    var n = pickedIds().length;
+    return '<div class="pickbar"><span>' + n + '장 선택</span><span class="side">' + allBtn(shown, false) +
+      '<button class="btn primary" id="go"' + (n ? "" : " disabled") + '>암기 시작</button></span></div>';
+  }
+
+  // 검색·체크·별표가 바뀔 때 목록 부분만 다시 그리기 (검색창 입력이 끊기지 않게)
+  function refreshList() {
+    var shown = WORDS.filter(matches);
+    document.getElementById("listbar").innerHTML = listbarHtml(shown);
+    document.getElementById("list").innerHTML = listHtml(shown);
+    document.getElementById("pickslot").innerHTML = pickbarHtml(shown);
+    var sub = document.getElementById("studysub");
+    if (sub) sub.textContent = studyLabel();
+  }
+
+  function studyLabel() {
+    var n = pickedIds().length;
+    return home.selecting && n ? "선택한 " + n + "장 외우기" : "카드를 뒤집으면서 외우기";
   }
 
   function renderHome() {
@@ -105,23 +206,41 @@
     app.innerHTML = '' +
       '<h1 class="title">IT 영어 단어장</h1>' +
       '<div class="modes">' +
-        '<button class="mode" id="study"><b>암기</b><span>카드를 뒤집으면서 외우기</span></button>' +
-        '<button class="mode" id="start"' + (todo ? "" : " disabled") + '><b>확인</b><span>' +
+        '<button class="mode" data-go="#/study"><b>암기</b><span id="studysub"></span></button>' +
+        '<button class="mode" data-go="#/review"' + (todo ? "" : " disabled") + '><b>확인</b><span>' +
           (todo ? '복습 ' + c.due + '장 · 새 카드 ' + c.fresh + '장' : '오늘 확인 끝') + '</span></button>' +
       '</div>' +
       '<p class="muted known">외운 카드 ' + c.known + ' / ' + c.total + '</p>' +
       '<input class="search" id="search" type="search" placeholder="단어 검색" autocomplete="off" value="' + esc(home.query) + '">' +
       '<div class="chips">' + chips + '</div>' +
-      '<div class="list" id="list">' + listHtml() + '</div>' +
-      '<div class="foot" id="foot"><button class="link" id="reset">복습 기록 초기화</button></div>';
+      '<div class="listbar" id="listbar"></div>' +
+      '<div class="list" id="list"></div>' +
+      '<div class="foot" id="foot"><button class="link" id="reset">복습 기록 초기화</button></div>' +
+      '<div id="pickslot"></div>';
+    refreshList();
 
     document.getElementById("search").addEventListener("input", function (e) {
       home.query = e.target.value;
-      document.getElementById("list").innerHTML = listHtml();
+      refreshList();
     });
-    document.getElementById("study").addEventListener("click", function () { location.hash = "#/study"; });
-    document.getElementById("start").addEventListener("click", function () { location.hash = "#/review"; });
     document.getElementById("reset").addEventListener("click", askReset);
+  }
+
+  // 홈에서 눌린 것 처리 (목록 부분은 계속 다시 그려지므로 한곳에서 받음)
+  function homeClick(el) {
+    if (el.id === "pick") { home.selecting = true; home.picked = {}; }
+    else if (el.id === "cancel") { home.selecting = false; home.picked = {}; }
+    else if (el.dataset.all) {
+      var shown = WORDS.filter(matches);
+      var allOn = shown.every(function (w) { return home.picked[w.id]; });
+      shown.forEach(function (w) { if (allOn) delete home.picked[w.id]; else home.picked[w.id] = true; });
+    }
+    else if (el.id === "go") { location.hash = "#/study"; return; }
+    else if (el.dataset.pick) {
+      if (home.picked[el.dataset.pick]) delete home.picked[el.dataset.pick]; else home.picked[el.dataset.pick] = true;
+    }
+    else return;
+    refreshList();
   }
 
   function askReset() {
@@ -144,7 +263,7 @@
 
     app.innerHTML = '' +
       '<div class="topbar"><button class="link" data-go="#/">‹ 목록</button>' +
-        '<span class="muted">' + (i + 1) + ' / ' + shown.length + '</span></div>' +
+        '<span class="side"><span class="muted">' + (i + 1) + ' / ' + shown.length + '</span>' + starBtn(w.id) + '</span></div>' +
       '<div class="card">' + cardBody(w) + '</div>' +
       '<div class="pager">' +
         '<button class="btn" ' + (prev ? 'data-go="#/card/' + esc(prev.id) + '"' : "disabled") + '>‹ 이전</button>' +
@@ -170,10 +289,31 @@
 
   // ───── 암기: 마음껏 뒤집으면서 외우기 ─────
 
+  function shuffle(a) {
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+
+  function markSeen(id) {
+    prefs.seen[id] = (prefs.seen[id] || 0) + 1;
+    savePrefs();
+  }
+
   function startStudy() {
-    var shown = WORDS.filter(matches);           // 홈에서 보던 목록(검색·분류) 그대로
-    if (!shown.length) shown = WORDS;
-    study = { ids: shown.map(function (w) { return w.id; }), i: 0, flipped: false };
+    var ids = home.selecting ? pickedIds() : [];   // 골라 둔 카드가 있으면 그것만
+    if (!ids.length) {
+      var shown = WORDS.filter(matches);            // 없으면 홈에서 보던 목록(검색·분류) 그대로
+      if (!shown.length) shown = WORDS;
+      ids = shown.map(function (w) { return w.id; });
+    }
+    // 순서: 암기에서 덜 본 카드가 먼저. 본 횟수가 같으면 매번 무작위
+    shuffle(ids);
+    ids.sort(function (x, y) { return (prefs.seen[x] || 0) - (prefs.seen[y] || 0); });
+    study = { ids: ids, i: 0, flipped: false };
+    markSeen(ids[0]);
     renderStudy();
   }
 
@@ -184,7 +324,7 @@
       : '<div class="card flip front" id="flip">' + frontBody(w, "눌러서 뒤집기") + '</div>';
     app.innerHTML = '' +
       '<div class="topbar"><button class="link" data-go="#/">‹ 목록</button>' +
-        '<span class="muted">암기 · ' + (study.i + 1) + ' / ' + study.ids.length + '</span></div>' +
+        '<span class="side"><span class="muted">암기 · ' + (study.i + 1) + ' / ' + study.ids.length + '</span>' + starBtn(w.id) + '</span></div>' +
       card +
       '<div class="pager">' +
         '<button class="btn" id="prev"' + (study.i > 0 ? "" : " disabled") + '>‹ 이전</button>' +
@@ -197,8 +337,9 @@
     document.getElementById("shuffle").addEventListener("click", shuffleStudy);
   }
 
-  function flipStudy() {
+  function flipStudy(e) {
     if (!study) return;
+    if (e && e.target && e.target.closest && e.target.closest("[data-speak]")) return; // 발음 버튼은 뒤집지 않음
     study.flipped = !study.flipped;
     turn(renderStudy);
   }
@@ -209,15 +350,12 @@
     if (i < 0 || i >= study.ids.length) return;
     study.i = i;
     study.flipped = false; // 새 카드는 항상 앞면(영어)부터
+    if (step > 0) markSeen(study.ids[i]);
     renderStudy();
   }
 
   function shuffleStudy() {
-    var a = study.ids;
-    for (var i = a.length - 1; i > 0; i--) {
-      var j = Math.floor(Math.random() * (i + 1));
-      var t = a[i]; a[i] = a[j]; a[j] = t;
-    }
+    shuffle(study.ids);
     study.i = 0;
     study.flipped = false;
     renderStudy();
@@ -257,7 +395,7 @@
     var pct = total ? Math.round(((total - left) / total) * 100) : 0;
     var head = '' +
       '<div class="topbar"><button class="link" data-go="#/">‹ 그만하기</button>' +
-        '<span class="muted">확인 · 남은 카드 ' + left + '장</span></div>' +
+        '<span class="side"><span class="muted">확인 · 남은 카드 ' + left + '장</span>' + starBtn(w.id) + '</span></div>' +
       '<div class="progress"><div style="width:' + pct + '%"></div></div>';
 
     if (!session.flipped) {
@@ -281,8 +419,9 @@
       '<div class="rates">' + buttons + '</div>';
   }
 
-  function flipReview() {
+  function flipReview(e) {
     if (!session || session.flipped || !session.current) return;
+    if (e && e.target && e.target.closest && e.target.closest("[data-speak]")) return; // 발음 버튼은 뒤집지 않음
     session.flipped = true;
     turn(renderReview);
   }
@@ -307,9 +446,21 @@
   }
 
   app.addEventListener("click", function (e) {
-    var el = e.target.closest("[data-go],[data-id],[data-filter],[data-rate]");
+    var el = e.target.closest("[data-speak],[data-star],[data-pick],[data-all],#pick,#cancel,#go,[data-go],[data-id],[data-filter],[data-rate]");
     if (!el || el.disabled) return;
-    if (el.dataset.go) location.hash = el.dataset.go;
+    if (el.dataset.speak) speak(el.dataset.speak);
+    else if (el.dataset.star) {
+      toggleStar(el.dataset.star);
+      if (document.getElementById("list")) refreshList();   // 홈: 목록만 다시
+      else {                                                 // 카드 화면: 버튼만 바꿈 (카드가 뒤집힌 상태 유지)
+        var on = isStar(el.dataset.star);
+        el.classList.toggle("on", on);
+        el.textContent = on ? "★" : "☆";
+        el.setAttribute("aria-pressed", on);
+      }
+    }
+    else if (el.dataset.pick || el.dataset.all || el.id === "pick" || el.id === "cancel" || el.id === "go") homeClick(el);
+    else if (el.dataset.go) location.hash = el.dataset.go;
     else if (el.dataset.id) location.hash = "#/card/" + encodeURIComponent(el.dataset.id);
     else if (el.dataset.filter) { home.filter = el.dataset.filter; renderHome(); }
     else if (el.dataset.rate) rate(el.dataset.rate);
